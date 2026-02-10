@@ -7,18 +7,15 @@ services:
       POSTGRES_DB: app
     volumes:
       - db-data:/var/lib/postgresql/data
-    ports:
-      - "5433:5432"
 
   redis:
     image: redis:7-alpine
-    ports:
-      - "6379:6379"
 
   backend:
     image: bulk-desensitizer-backend
     build:
-      context: ./backend
+      context: .
+      dockerfile: backend/Dockerfile
     environment:
       DATABASE_URL: postgresql+psycopg2://app:app@db:5432/app
       CELERY_BROKER_URL: redis://redis:6379/0
@@ -29,7 +26,7 @@ services:
       - uploads:/data/uploads
       - outputs:/data/outputs
     ports:
-      - "8000:8000"
+      - "${BACKEND_PORT:-18000}:8000"
     depends_on:
       - db
       - redis
@@ -37,7 +34,8 @@ services:
   worker:
     image: bulk-desensitizer-worker
     build:
-      context: ./backend
+      context: .
+      dockerfile: backend/Dockerfile
     command: uv run celery -A worker.celery_app worker --loglevel=info
     environment:
       DATABASE_URL: postgresql+psycopg2://app:app@db:5432/app
@@ -51,22 +49,6 @@ services:
     depends_on:
       - db
       - redis
-
-  frontend:
-    image: bulk-desensitizer-frontend
-    build:
-      context: ./frontend
-      args:
-        NPM_REGISTRY: http://registry.npmmirror.com
-    environment:
-      VITE_API_BASE_URL: http://localhost:8000
-    ports:
-      - "5173:5173"
-    dns:
-      - 223.5.5.5
-      - 114.114.114.114
-    depends_on:
-      - backend
 
 volumes:
   db-data:

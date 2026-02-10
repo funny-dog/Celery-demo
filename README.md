@@ -13,8 +13,13 @@ docker compose up --build
 ```
 
 Then open:
-- Frontend: http://localhost:5173
-- API docs: http://localhost:8000/docs
+- Frontend: http://localhost:18000
+- API docs: http://localhost:18000/docs
+
+If `18000` is occupied, you can override it:
+```bash
+BACKEND_PORT=19000 docker compose up --build
+```
 
 ## How It Works
 1. Upload a CSV or XLSX via `POST /upload/desensitize`
@@ -23,8 +28,15 @@ Then open:
 4. Frontend polls `GET /status/{task_id}` every 2 seconds and updates the progress bar
 5. Download the result via `GET /download/{task_id}`
 
+For large file splitting:
+1. Upload a PDF or TXT via `POST /upload/split`
+2. Celery splits the file into chunks of up to 140MB each
+3. Backend packs all split parts into a ZIP archive
+4. Download the ZIP via `GET /download/{task_id}`
+
 ## API
 - `POST /upload/desensitize` (multipart form-data, field: `file`)
+- `POST /upload/split` (multipart form-data, field: `file`, supports `.pdf`/`.txt`)
 - `GET /status/{task_id}`
 - `GET /download/{task_id}`
 
@@ -51,9 +63,8 @@ The backend supports both CSV and XLSX, so the Excel file can be uploaded direct
 ## Services (docker-compose)
 - `db`: PostgreSQL 15
 - `redis`: Redis 7
-- `backend`: FastAPI app
+- `backend`: FastAPI app + embedded frontend static files
 - `worker`: Celery worker
-- `frontend`: Vite dev server
 
 ## Local Development (optional)
 Backend:
@@ -68,7 +79,7 @@ cd backend
 uv run celery -A worker.celery_app worker --loglevel=info
 ```
 
-Frontend:
+Frontend (optional local dev):
 ```bash
 cd frontend
 npm install

@@ -16,13 +16,14 @@ from fastapi import (
 )
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
 from config import settings
 from database import get_session, init_db
 from models import DataRecord
 from schemas import TaskStatusResponse, UploadResponse, TaskCancelResponse
-from worker import process_csv, process_desensitize
+from worker import process_csv, process_desensitize, process_split_archive
 from celery_app import celery_app
 
 app = FastAPI(title="Bulk Desensitizer")
@@ -33,6 +34,30 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+frontend_dist_dir = Path(settings.frontend_dist_dir)
+frontend_assets_dir = frontend_dist_dir / "assets"
+if frontend_assets_dir.exists():
+    app.mount(
+        "/assets",
+        StaticFiles(directory=str(frontend_assets_dir)),
+        name="frontend-assets",
+    )
+
+
+def _detect_media_type(file_path: Path) -> str:
+    suffix = file_path.suffix.lower()
+    if suffix == ".csv":
+        return "text/csv"
+    if suffix == ".xlsx":
+        return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    if suffix == ".zip":
+        return "application/zip"
+    if suffix == ".txt":
+        return "text/plain"
+    if suffix == ".pdf":
+        return "application/pdf"
+    return "application/octet-stream"
 
 
 @app.on_event("startup")
@@ -66,6 +91,14 @@ async def upload(file: UploadFile = File(...)) -> UploadResponse:
     return UploadResponse(task_id=task.id)
 
 
+@app.get("/", include_in_schema=False)
+def frontend_index():
+    index_path = Path(settings.frontend_dist_dir) / "index.html"
+    if index_path.exists():
+        return FileResponse(path=index_path, media_type="text/html")
+    return {"message": "Bulk Desensitizer API is running"}
+
+
 @app.post("/upload/desensitize", response_model=UploadResponse)
 async def upload_desensitize(file: UploadFile = File(...)) -> UploadResponse:
     if not file.filename:
@@ -87,6 +120,30 @@ async def upload_desensitize(file: UploadFile = File(...)) -> UploadResponse:
             buffer.write(chunk)
 
     task = process_desensitize.delay(str(destination))
+    return UploadResponse(task_id=task.id)
+
+
+@app.post("/upload/split", response_model=UploadResponse)
+async def upload_split(file: UploadFile = File(...)) -> UploadResponse:
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="missing filename")
+
+    suffix = Path(file.filename).suffix.lower()
+    if suffix not in {".pdf", ".txt"}:
+        raise HTTPException(status_code=400, detail="only .pdf or .txt is supported")
+
+    upload_dir = Path(settings.upload_dir)
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    destination = upload_dir / f"{uuid4().hex}_{file.filename}"
+
+    with destination.open("wb") as buffer:
+        while True:
+            chunk = await file.read(1024 * 1024)
+            if not chunk:
+                break
+            buffer.write(chunk)
+
+    task = process_split_archive.delay(str(destination), 140)
     return UploadResponse(task_id=task.id)
 
 
@@ -204,10 +261,33 @@ def export_data(task_id: str | None = None, db: Session = Depends(get_session)):
 @app.get("/download/{task_id}")
 def download_result(task_id: str):
     output_dir = Path(settings.output_dir)
+    result = AsyncResult(task_id, app=celery_app)
+    if result.state == "SUCCESS":
+        meta = result.result or {}
+        output_file = meta.get("output_file")
+        if output_file:
+            file_path = output_dir / output_file
+            if file_path.exists():
+                return FileResponse(
+                    path=file_path,
+                    filename=file_path.name,
+                    media_type=_detect_media_type(file_path),
+                )
+
     candidates = list(output_dir.glob(f"{task_id}_desensitized.*"))
     if not candidates:
+        split_zip = output_dir / f"{task_id}_split.zip"
+        if split_zip.exists():
+            return FileResponse(
+                path=split_zip,
+                filename=split_zip.name,
+                media_type=_detect_media_type(split_zip),
+            )
         raise HTTPException(status_code=404, detail="output file not ready")
 
     file_path = candidates[0]
-    media_type = "text/csv" if file_path.suffix.lower() == ".csv" else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    return FileResponse(path=file_path, filename=file_path.name, media_type=media_type)
+    return FileResponse(
+        path=file_path,
+        filename=file_path.name,
+        media_type=_detect_media_type(file_path),
+    )

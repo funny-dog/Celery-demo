@@ -2,53 +2,71 @@
   <div class="page">
     <header class="hero">
       <div class="hero-text">
-        <p class="eyebrow">Desensitization Tool</p>
-        <h1>Upload CSV/XLSX, download desensitized results.</h1>
+        <p class="eyebrow">脱敏与分片工具</p>
+        <h1>上传文件，异步处理后下载结果。</h1>
         <p class="lead">
-          Mask sensitive columns (email, phone, ID, name, address) based on header keywords,
-          then download the processed file once the task completes.
+          同时支持 CSV/XLSX 脱敏与 PDF/TXT 分片。
+          大文件会按 140MB 切分，并打包为 ZIP 下载。
         </p>
       </div>
       <div class="hero-card">
         <div>
-          <p class="hero-label">Stack</p>
+          <p class="hero-label">技术栈</p>
           <p class="hero-value">FastAPI · Celery · Redis · PostgreSQL</p>
         </div>
         <div>
-          <p class="hero-label">Mode</p>
-          <p class="hero-value">Non-blocking upload + async desensitize</p>
+          <p class="hero-label">处理模式</p>
+          <p class="hero-value">异步脱敏 / 140MB 分片 + ZIP</p>
         </div>
         <div>
-          <p class="hero-label">Cadence</p>
-          <p class="hero-value">Status polling every 2 seconds</p>
+          <p class="hero-label">刷新频率</p>
+          <p class="hero-value">每 2 秒轮询一次状态</p>
         </div>
       </div>
     </header>
 
     <section class="panel">
       <div class="panel-card">
-        <p class="panel-title">Upload CSV/XLSX</p>
+        <p class="panel-title">{{ panelTitle }}</p>
+        <div class="mode-switch">
+          <button
+            class="mode-btn"
+            :class="{ active: mode === 'desensitize' }"
+            :disabled="uploading"
+            @click="switchMode('desensitize')"
+          >
+            CSV/XLSX 脱敏
+          </button>
+          <button
+            class="mode-btn"
+            :class="{ active: mode === 'split' }"
+            :disabled="uploading"
+            @click="switchMode('split')"
+          >
+            PDF/TXT 分片
+          </button>
+        </div>
         <label class="file-input">
           <input
             type="file"
-            accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            :accept="fileAccept"
             @change="handleFile"
           />
-          <span>Choose file</span>
+          <span>选择文件</span>
         </label>
         <div class="file-meta">
           <p v-if="fileName" class="file-name">{{ fileName }}</p>
-          <p v-else class="file-hint">Drop a CSV/XLSX here or click to select.</p>
+          <p v-else class="file-hint">{{ fileHint }}</p>
         </div>
         <button class="primary" :disabled="!selectedFile || uploading" @click="uploadFile">
-          {{ uploading ? 'Uploading...' : 'Upload & desensitize' }}
+          {{ uploading ? '上传中...' : uploadButtonLabel }}
         </button>
       </div>
 
       <div class="panel-card status">
         <div class="status-header">
           <div>
-            <p class="panel-title">Task status</p>
+            <p class="panel-title">任务状态</p>
             <p class="status-state">{{ statusLabel }}</p>
           </div>
           <div class="status-actions">
@@ -59,10 +77,10 @@
                 @click="cancelTask"
                 class="cancel-btn"
               >
-                Cancel
+                取消任务
               </button>
               <button v-if="status.state === 'SUCCESS'" @click="downloadResults" class="download-btn">
-                Download result
+                下载结果
               </button>
             </div>
           </div>
@@ -75,46 +93,74 @@
         <div class="status-meta">
           <span>{{ progress }}%</span>
           <span v-if="status.total">{{ status.current }}/{{ status.total }}</span>
-          <span v-if="status.message">{{ status.message }}</span>
+          <span v-if="localizedStatusMessage">{{ localizedStatusMessage }}</span>
         </div>
 
         <p v-if="errorMessage" class="error">{{ errorMessage }}</p>
       </div>
 
-      <div class="panel-card rules-card">
-        <p class="panel-title">Keyword Detection Rules</p>
+      <div v-if="mode === 'desensitize'" class="panel-card rules-card">
+        <p class="panel-title">关键词识别规则</p>
         <p class="rules-desc">
-          Columns matching these keywords (case-insensitive) will be automatically masked.
+          列名匹配以下关键词（不区分大小写）时会自动脱敏。
         </p>
         <div class="rules-grid">
           <div class="rule-item">
-            <span class="rule-label">Email</span>
+            <span class="rule-label">邮箱</span>
             <div class="rule-tags">
               <span>email</span><span>e-mail</span><span>mail</span><span>邮箱</span>
             </div>
           </div>
           <div class="rule-item">
-            <span class="rule-label">Phone</span>
+            <span class="rule-label">手机号</span>
             <div class="rule-tags">
               <span>phone</span><span>mobile</span><span>tel</span><span>telephone</span><span>手机号</span><span>电话</span>
             </div>
           </div>
           <div class="rule-item">
-            <span class="rule-label">Identity</span>
+            <span class="rule-label">证件号</span>
             <div class="rule-tags">
               <span>id_card</span><span>idcard</span><span>ssn</span><span>passport</span><span>identity</span><span>身份证</span><span>证件</span>
             </div>
           </div>
           <div class="rule-item">
-            <span class="rule-label">Name</span>
+            <span class="rule-label">姓名</span>
             <div class="rule-tags">
               <span>name</span><span>full_name</span><span>first_name</span><span>last_name</span><span>姓名</span>
             </div>
           </div>
           <div class="rule-item">
-            <span class="rule-label">Address</span>
+            <span class="rule-label">地址</span>
             <div class="rule-tags">
               <span>address</span><span>addr</span><span>地址</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div v-else class="panel-card rules-card">
+        <p class="panel-title">PDF/TXT 分片规则</p>
+        <p class="rules-desc">
+          上传的 PDF/TXT 会被切分为多个分片（每片不超过 140MB），
+          最终统一打包为一个 ZIP 供下载。
+        </p>
+        <div class="rules-grid">
+          <div class="rule-item">
+            <span class="rule-label">支持格式</span>
+            <div class="rule-tags">
+              <span>.pdf</span><span>.txt</span>
+            </div>
+          </div>
+          <div class="rule-item">
+            <span class="rule-label">分片大小</span>
+            <div class="rule-tags">
+              <span>每片最多 140MB</span>
+            </div>
+          </div>
+          <div class="rule-item">
+            <span class="rule-label">输出结果</span>
+            <div class="rule-tags">
+              <span>ZIP 压缩包</span>
             </div>
           </div>
         </div>
@@ -133,6 +179,7 @@ const fileName = ref('')
 const uploading = ref(false)
 const taskId = ref('')
 const errorMessage = ref('')
+const mode = ref('desensitize')
 const status = ref({
   state: 'IDLE',
   current: 0,
@@ -141,6 +188,27 @@ const status = ref({
 })
 
 const socket = ref(null)
+
+const fileAccept = computed(() => {
+  if (mode.value === 'split') {
+    return '.pdf,.txt,application/pdf,text/plain'
+  }
+  return '.csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+})
+
+const panelTitle = computed(() => {
+  return mode.value === 'split' ? '上传 PDF/TXT 进行分片' : '上传 CSV/XLSX 进行脱敏'
+})
+
+const fileHint = computed(() => {
+  return mode.value === 'split'
+    ? '将 PDF/TXT 拖拽到这里，或点击选择文件。'
+    : '将 CSV/XLSX 拖拽到这里，或点击选择文件。'
+})
+
+const uploadButtonLabel = computed(() => {
+  return mode.value === 'split' ? '上传并按 140MB 分片打包' : '上传并执行脱敏'
+})
 
 const progress = computed(() => {
   if (!status.value.total) {
@@ -151,13 +219,48 @@ const progress = computed(() => {
 })
 
 const statusLabel = computed(() => {
-  if (status.value.state === 'IDLE') return 'Waiting for upload'
-  if (status.value.state === 'PENDING') return 'Queued'
-  if (status.value.state === 'PROGRESS') return 'Processing'
-  if (status.value.state === 'SUCCESS') return 'Completed'
-  if (status.value.state === 'FAILURE') return 'Failed'
+  if (status.value.state === 'IDLE') return '等待上传'
+  if (status.value.state === 'PENDING') return '排队中'
+  if (status.value.state === 'PROGRESS') return '处理中'
+  if (status.value.state === 'SUCCESS') return '已完成'
+  if (status.value.state === 'FAILURE') return '处理失败'
+  if (status.value.state === 'REVOKED') return '已取消'
   return status.value.state
 })
+
+const localizeStatusMessage = (message) => {
+  if (!message) return ''
+
+  if (message === 'queued') return '排队中'
+  if (message === 'splitting file') return '正在切分文件'
+  if (message === 'completed') return '已完成'
+  if (message.startsWith('completed (') && message.endsWith(')')) {
+    const detail = message.slice('completed ('.length, -1)
+    return `已完成（${detail}）`
+  }
+
+  const processRowMatch = message.match(/^Processing row (\d+)\/(\d+)$/)
+  if (processRowMatch) {
+    return `正在处理第 ${processRowMatch[1]} / ${processRowMatch[2]} 行`
+  }
+
+  const desensitizeMatch = message.match(/^Desensitizing row (\d+)\/(\d+)$/)
+  if (desensitizeMatch) {
+    return `正在脱敏第 ${desensitizeMatch[1]} / ${desensitizeMatch[2]} 行`
+  }
+
+  return message
+}
+
+const localizedStatusMessage = computed(() => localizeStatusMessage(status.value.message))
+
+const switchMode = (nextMode) => {
+  if (mode.value === nextMode) return
+  mode.value = nextMode
+  selectedFile.value = null
+  fileName.value = ''
+  errorMessage.value = ''
+}
 
 const handleFile = (event) => {
   const file = event.target.files?.[0] || null
@@ -167,7 +270,10 @@ const handleFile = (event) => {
 
 const uploadFile = async () => {
   if (!selectedFile.value) {
-    errorMessage.value = 'Please choose a CSV or XLSX file first.'
+    errorMessage.value =
+      mode.value === 'split'
+        ? '请先选择 PDF 或 TXT 文件。'
+        : '请先选择 CSV 或 XLSX 文件。'
     return
   }
 
@@ -177,15 +283,16 @@ const uploadFile = async () => {
   try {
     const formData = new FormData()
     formData.append('file', selectedFile.value)
+    const endpoint = mode.value === 'split' ? '/upload/split' : '/upload/desensitize'
 
-    const response = await fetch(`${apiBase}/upload/desensitize`, {
+    const response = await fetch(`${apiBase}${endpoint}`, {
       method: 'POST',
       body: formData
     })
 
     if (!response.ok) {
       const message = await response.text()
-      throw new Error(message || 'Upload failed')
+      throw new Error(message || '上传失败')
     }
 
     const data = await response.json()
@@ -199,7 +306,7 @@ const uploadFile = async () => {
 
     connectWebSocket()
   } catch (error) {
-    errorMessage.value = error?.message || 'Unexpected error'
+    errorMessage.value = error?.message || '发生未知错误'
   } finally {
     uploading.value = false
   }
@@ -224,7 +331,7 @@ const connectWebSocket = () => {
       status.value.total = data.total
       status.value.message = data.message
 
-      if (data.message === 'completed') {
+      if (typeof data.message === 'string' && data.message.startsWith('completed')) {
         status.value.state = 'SUCCESS'
         socket.value.close()
       } else {
@@ -241,10 +348,10 @@ const cancelTask = async () => {
   try {
     await fetch(`${apiBase}/tasks/${taskId.value}/cancel`, { method: 'POST' })
     status.value.state = 'REVOKED'
-    status.value.message = 'Cancelled by user'
+    status.value.message = '已取消'
     if (socket.value) socket.value.close()
   } catch (e) {
-    errorMessage.value = 'Failed to cancel task'
+    errorMessage.value = '取消任务失败'
   }
 }
 
@@ -391,6 +498,30 @@ onBeforeUnmount(() => {
   text-transform: uppercase;
   letter-spacing: 0.1em;
   color: var(--ink-2);
+}
+
+.mode-switch {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.mode-btn {
+  border: 1px solid var(--stroke);
+  background: white;
+  color: var(--ink-1);
+  border-radius: 999px;
+  padding: 8px 14px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.mode-btn.active {
+  background: var(--accent-1);
+  color: white;
+  border-color: var(--accent-1);
 }
 
 .file-input {

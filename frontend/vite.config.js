@@ -5,6 +5,7 @@ export default defineConfig({
   plugins: [vue()],
   server: {
     host: true,
-    port: 5173
+    port: 5173,
+    allowedHosts: ['.orb.local', 'localhost', '127.0.0.1']
   }
 })

@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     celery_result_backend: str = "redis://redis:6379/1"
     upload_dir: str = "/data/uploads"
     output_dir: str = "/data/outputs"
+    frontend_dist_dir: str = "/app/frontend_dist"
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

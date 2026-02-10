@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import csv
+import io
 import json
 from pathlib import Path
+from zipfile import ZIP_DEFLATED, ZipFile
 
 import redis
 from celery import Task
 from openpyxl import Workbook, load_workbook
+from pypdf import PdfReader, PdfWriter
 
 from celery_app import celery_app
 from config import settings
@@ -21,6 +24,7 @@ PHONE_KEYWORDS = {"phone", "mobile", "tel", "telephone", "手机号", "电话"}
 ID_KEYWORDS = {"id_card", "idcard", "identity", "ssn", "passport", "身份证", "证件"}
 NAME_KEYWORDS = {"name", "full_name", "first_name", "last_name", "姓名"}
 ADDRESS_KEYWORDS = {"address", "addr", "地址"}
+DEFAULT_SPLIT_CHUNK_BYTES = 140 * 1024 * 1024
 
 
 def _iter_csv_rows(path: Path):
@@ -133,6 +137,153 @@ def _apply_mask(value, masker):
     if not text:
         return text
     return masker(text) if masker else text
+
+
+def _part_path(output_dir: Path, task_id: str, part_index: int, suffix: str) -> Path:
+    return output_dir / f"{task_id}_part_{part_index:03d}{suffix}"
+
+
+def _write_pdf_pages(pages, destination: Path) -> int:
+    writer = PdfWriter()
+    for page in pages:
+        writer.add_page(page)
+    with destination.open("wb") as handle:
+        writer.write(handle)
+    return destination.stat().st_size
+
+
+def _pdf_pages_size(pages) -> int:
+    writer = PdfWriter()
+    for page in pages:
+        writer.add_page(page)
+    buffer = io.BytesIO()
+    writer.write(buffer)
+    return buffer.tell()
+
+
+def _split_txt_parts(
+    source_path: Path,
+    output_dir: Path,
+    task_id: str,
+    chunk_size_bytes: int,
+) -> list[Path]:
+    if chunk_size_bytes <= 0:
+        raise ValueError("chunk_size_bytes must be greater than 0")
+
+    part_paths: list[Path] = []
+    part_index = 1
+    current_path = _part_path(output_dir, task_id, part_index, ".txt")
+    current_file = current_path.open("wb")
+    current_size = 0
+    part_paths.append(current_path)
+
+    try:
+        with source_path.open("rb") as source:
+            while True:
+                chunk = source.read(1024 * 1024)
+                if not chunk:
+                    break
+
+                offset = 0
+                chunk_length = len(chunk)
+                while offset < chunk_length:
+                    available = chunk_size_bytes - current_size
+                    if available == 0:
+                        current_file.close()
+                        part_index += 1
+                        current_path = _part_path(output_dir, task_id, part_index, ".txt")
+                        part_paths.append(current_path)
+                        current_file = current_path.open("wb")
+                        current_size = 0
+                        available = chunk_size_bytes
+
+                    take = min(available, chunk_length - offset)
+                    current_file.write(chunk[offset:offset + take])
+                    offset += take
+                    current_size += take
+    finally:
+        current_file.close()
+
+    return part_paths
+
+
+def _split_pdf_parts(
+    source_path: Path,
+    output_dir: Path,
+    task_id: str,
+    chunk_size_bytes: int,
+) -> list[Path]:
+    if chunk_size_bytes <= 0:
+        raise ValueError("chunk_size_bytes must be greater than 0")
+
+    reader = PdfReader(str(source_path))
+    pages = list(reader.pages)
+    if not pages:
+        output_path = _part_path(output_dir, task_id, 1, ".pdf")
+        _write_pdf_pages([], output_path)
+        return [output_path]
+
+    part_paths: list[Path] = []
+    current_pages = []
+    part_index = 1
+
+    for page in pages:
+        current_pages.append(page)
+        if _pdf_pages_size(current_pages) <= chunk_size_bytes:
+            continue
+
+        if len(current_pages) == 1:
+            output_path = _part_path(output_dir, task_id, part_index, ".pdf")
+            _write_pdf_pages(current_pages, output_path)
+            part_paths.append(output_path)
+            part_index += 1
+            current_pages = []
+            continue
+
+        overflow_page = current_pages.pop()
+        output_path = _part_path(output_dir, task_id, part_index, ".pdf")
+        _write_pdf_pages(current_pages, output_path)
+        part_paths.append(output_path)
+        part_index += 1
+
+        current_pages = [overflow_page]
+        if _pdf_pages_size(current_pages) > chunk_size_bytes:
+            output_path = _part_path(output_dir, task_id, part_index, ".pdf")
+            _write_pdf_pages(current_pages, output_path)
+            part_paths.append(output_path)
+            part_index += 1
+            current_pages = []
+
+    if current_pages:
+        output_path = _part_path(output_dir, task_id, part_index, ".pdf")
+        _write_pdf_pages(current_pages, output_path)
+        part_paths.append(output_path)
+
+    return part_paths
+
+
+def split_file_and_build_zip(
+    source_path: Path,
+    output_dir: Path,
+    task_id: str,
+    chunk_size_bytes: int = DEFAULT_SPLIT_CHUNK_BYTES,
+) -> tuple[Path, list[Path]]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    suffix = source_path.suffix.lower()
+    if suffix == ".txt":
+        part_paths = _split_txt_parts(source_path, output_dir, task_id, chunk_size_bytes)
+    elif suffix == ".pdf":
+        part_paths = _split_pdf_parts(source_path, output_dir, task_id, chunk_size_bytes)
+    else:
+        raise ValueError(f"unsupported file type: {suffix}")
+
+    zip_path = output_dir / f"{task_id}_split.zip"
+    with ZipFile(zip_path, "w", compression=ZIP_DEFLATED) as archive:
+        for part_path in part_paths:
+            archive.write(part_path, arcname=part_path.name)
+
+    return zip_path, part_paths
 
 
 @celery_app.task(bind=True)
@@ -293,4 +444,49 @@ def process_desensitize(self: Task, file_path: str) -> dict:
         "total": data_total,
         "message": "completed",
         "output_file": output_path.name,
+    }
+
+
+@celery_app.task(bind=True)
+def process_split_archive(self: Task, file_path: str, chunk_size_mb: int = 140) -> dict:
+    path = Path(file_path)
+    if not path.exists():
+        raise FileNotFoundError(f"file not found: {file_path}")
+
+    suffix = path.suffix.lower()
+    if suffix not in {".pdf", ".txt"}:
+        raise ValueError(f"unsupported file type: {suffix}")
+
+    output_dir = Path(settings.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    chunk_size_bytes = chunk_size_mb * 1024 * 1024
+    self.update_state(
+        state="PROGRESS",
+        meta={"current": 0, "total": 1, "message": "splitting file"},
+    )
+    redis_client.publish(
+        f"task_progress:{self.request.id}",
+        json.dumps({"current": 0, "total": 1, "message": "splitting file"}),
+    )
+
+    zip_path, part_paths = split_file_and_build_zip(
+        path,
+        output_dir,
+        task_id=self.request.id,
+        chunk_size_bytes=chunk_size_bytes,
+    )
+
+    part_count = len(part_paths)
+    message = f"completed ({part_count} parts)"
+    redis_client.publish(
+        f"task_progress:{self.request.id}",
+        json.dumps({"current": part_count, "total": part_count, "message": message}),
+    )
+
+    return {
+        "current": part_count,
+        "total": part_count,
+        "message": message,
+        "output_file": zip_path.name,
     }

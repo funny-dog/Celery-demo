@@ -9,6 +9,7 @@
     "preview": "vite preview --host 0.0.0.0 --port 5173"
   },
   "dependencies": {
+    "@rollup/rollup-linux-arm64-gnu": "^4.57.1",
     "vue": "^3.5.0"
   },
   "devDependencies": {
