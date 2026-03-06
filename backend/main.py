@@ -21,6 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
+from api.v1 import auth, users, datasources, tasks, audit, discovery, masking
 from config import settings
 from database import get_session, init_db
 from models import DataRecord
@@ -37,6 +38,15 @@ from worker import process_csv, process_desensitize, process_split_archive
 from celery_app import celery_app
 
 app = FastAPI(title="Bulk Desensitizer")
+
+# Register API v1 routes
+app.include_router(auth.router, prefix="/api/v1")
+app.include_router(users.router, prefix="/api/v1")
+app.include_router(datasources.router, prefix="/api/v1")
+app.include_router(tasks.router, prefix="/api/v1")
+app.include_router(audit.router, prefix="/api/v1")
+app.include_router(discovery.router, prefix="/api/v1")
+app.include_router(masking.router, prefix="/api/v1")
 
 app.add_middleware(
     CORSMiddleware,

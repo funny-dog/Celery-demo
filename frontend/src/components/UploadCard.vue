@@ -123,11 +123,11 @@ const isDragOver = ref(false)
 const fileAccept = computed(() => {
   return props.mode === 'split' 
     ? '.pdf,.txt,application/pdf,text/plain'
-    : '.csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    : '.csv,.xlsx,.json,.jsonl,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/json,application/jsonl'
 })
 
 const panelTitle = computed(() => {
-  return props.mode === 'split' ? '上传 PDF/TXT 进行分片' : '上传 CSV/XLSX 进行脱敏'
+  return props.mode === 'split' ? '上传 PDF/TXT 进行分片' : '上传 CSV/XLSX/JSON 进行脱敏'
 })
 
 const fileHint = computed(() => {

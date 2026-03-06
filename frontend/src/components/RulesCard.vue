@@ -57,6 +57,11 @@ const rules = computed(() => {
   
   return [
     { 
+      label: '支持格式', 
+      icon: 'file',
+      tags: ['.csv', '.xlsx', '.json', '.jsonl'] 
+    },
+    { 
       label: '邮箱', 
       icon: 'mail',
       tags: ['email', 'e-mail', 'mail', '邮箱'] 
