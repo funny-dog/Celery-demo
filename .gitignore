@@ -26,3 +26,6 @@ yarn-error.log
 .npm/
 
 AGENTS.md
+
+# Worktrees
+.worktrees/
